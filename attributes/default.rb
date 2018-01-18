@@ -62,8 +62,27 @@ default['varnish']['configure']['vcl_template']['variables'] = {
   config: {
     backend_host: '127.0.0.1',
     backend_port: '8080',
+    'VARNISH_LISTEN_PORT': '6081',
+    'VARNISH_BACKEND_PORT': '80',
+    'VARNISH_BACKEND_ADDRESS': '127.0.0.1',
+    'VARNISH_ADMIN_LISTEN_ADDRESS': '127.0.0.1',
+    'VARNISH_ADMIN_LISTEN_PORT': '6082',
+    'VARNISH_SECRET_FILE': '/etc/varnish/secret',
+    'VARNISH_MIN_THREADS': '1',
+    'VARNISH_MAX_THREADS': '1000',
+    'VARNISH_THREAD_TIMEOUT': '120',
+    'VARNISH_STORAGE_FILE': '/var/lib/varnish/varnish_storage.bin',
+    'VARNISH_STORAGE_SIZE': '1G',
+    'VARNISH_STORAGE': 'malloc',
+    'VARNISH_TTL': '120',
+    'VARNISH_WORKING_DIR': '',
+    'VARNISH_UID_SWITCH': 'true',
+    'GeoIP_enabled': 'false',
+    'version': '4.0'
   },
 }
+
+
 
 default['varnish']['configure']['log'] = {}
 

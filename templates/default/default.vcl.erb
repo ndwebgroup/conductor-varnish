@@ -1,7 +1,149 @@
 <%- if (@config[:major_version] || @varnish.fetch(:installed_version)) >= 4.0 %>
 vcl 4.0;
 <%- end %>
-backend default {
-        .host = "<%= @config.fetch(:backend_host) %>";
-        .port = "<%= @config.fetch(:backend_port) %>";
+
+acl privileged {
+  "127.0.0.1";
+  <%- if @config[:acl_privileged_subnet_mask] -%>
+  <%= @config[:acl_privileged_subnet_mask] %>;
+  <%- end -%>
 }
+
+backend default {
+  .host = "<%= @config[:VARNISH_BACKEND_ADDRESS] %>";
+  .port = "<%= @config[:VARNISH_BACKEND_PORT] %>";
+  .first_byte_timeout = 300s;
+}
+
+sub vcl_recv {
+  # if (req.http.X-Forwarded-For) {
+  #   std.collect(req.http.X-Forwarded-For);
+  #   set req.http.X-Forwarded-For = req.http.X-Forwarded-For + ", " + client.ip;
+  # } else {
+  #   set req.http.X-Forwarded-For = client.ip;
+  # }
+
+  # Skip caching admin pages
+  if (req.url ~ "^/admin.*") {
+    return (pass);
+  }
+
+  ### parse accept encoding rulesets to make it look nice
+  if (req.http.Accept-Encoding) {
+    if (req.http.Accept-Encoding ~ "gzip") {
+      set req.http.Accept-Encoding = "gzip";
+    } elsif (req.http.Accept-Encoding ~ "deflate") {
+      set req.http.Accept-Encoding = "deflate";
+    } else {
+      # unkown algorithm
+      remove req.http.Accept-Encoding;
+    }
+  }
+
+  # Can be used to generate "backend" refreshes
+  # TODO: Use "REFRESH" with pre cache paths
+  if (req.request == "REFRESH" || req.http.user-agent ~ "AnemoneRefresher") {
+    if (!client.ip ~ privileged) {
+      error 405 "Not allowed.";
+    }
+    set req.request = "GET";
+    set req.hash_always_miss = true;
+  }
+
+<%#
+  if (req.request == "PURGE") {
+    if (!client.ip ~ privileged) {
+      error 405 "Not allowed.";
+    }
+    return (lookup);
+  }
+-%>
+
+  if (req.request == "BAN") {
+    if (!client.ip ~ privileged) {
+      error 405 "Not allowed.";
+    }
+    ban("obj.http.x-url ~ " + req.http.x-ban-url +
+        " && obj.http.x-host ~ " + req.http.x-ban-host);
+    error 200 "Banned";
+  }
+
+  # remove all cookies starting with an _
+  set req.http.Cookie = regsuball(req.http.Cookie, "(^|;\s*)_[^;=]+=[^;]*", "");
+  set req.http.Cookie = regsuball(req.http.Cookie, "(^|;\s*)(s_fid|s_nr)=[^;]*", "");
+  if (req.http.Cookie == "") {
+    remove req.http.Cookie;
+  }
+
+  # Strip out ALL utm_ values from request URL query parameters
+  set req.url = regsuball(req.url, "([\?|&])utm_(\w+)=[^&\s]*&?", "\1");
+  # # get rid of trailing & or ?
+  set req.url = regsuball(req.url, "[\?|&]+$", "");
+  set req.grace = 60m;
+}
+
+sub vcl_fetch {
+  set beresp.grace = 60m;
+  set beresp.http.x-url  = req.url;
+  set beresp.http.x-host = req.http.host;
+
+  # Only act if the backend says "this is cachable"
+  if (beresp.ttl > 0s) {
+    unset beresp.http.Set-Cookie;
+    set beresp.ttl = 90d;
+
+    if (req.url ~ "\.(gif|jpg|jpeg|bmp|png|tiff|tif|ico|img|tga|wmf|woff|svg)$") {
+      if (req.url ~ "assets") {
+        set beresp.http.Cache-Control = "private, must-revalidate, max-age=600";
+      } else {
+        set beresp.http.Cache-Control = "private, must-revalidate, max-age=604800";
+      }
+    } elseif (req.url ~ "\.(js|css)$") {
+      set beresp.http.Cache-Control = "private, must-revalidate, max-age=86400";
+    } else {
+      set beresp.http.Cache-Control = "private, max-age=60";
+    }
+    set beresp.http.x-mark-for-age-reset = "yes";
+  }
+}
+
+sub vcl_deliver {
+  if (obj.hits > 0) {
+    set resp.http.X-Cache = "HIT";
+    set resp.http.X-Cache-Hits = obj.hits;
+  } else {
+    set resp.http.X-Cache = "MISS";
+  }
+
+  if (resp.http.x-mark-for-age-reset) {
+    unset resp.http.x-mark-for-age-reset;
+
+    set resp.http.X-Age = resp.http.Age;
+    set resp.http.Age = "0";
+  }
+
+  unset resp.http.x-url;
+  unset resp.http.x-host;
+}
+
+<%#
+sub vcl_hit {
+  if (req.request == "PURGE") {
+    purge;
+    error 200 "Purged";
+  }
+}
+
+sub vcl_miss {
+  if (req.request == "PURGE") {
+    purge;
+    error 404 "Not in cache";
+  }
+}
+
+sub vcl_pass {
+  if (req.request == "PURGE") {
+    error 502 "PURGE on a passed object";
+  }
+}
+%>
